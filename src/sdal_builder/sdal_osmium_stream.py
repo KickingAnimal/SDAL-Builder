@@ -53,8 +53,14 @@ _DRIVABLE = {
 
 
 class _RoadHandler(_ProgressHandler):
+    # Class-level counter to number each invocation
+    _pass_counter = 0
+
     def __init__(self) -> None:
-        super().__init__("_RoadHandler")
+        # Increment pass count and generate a unique label
+        _RoadHandler._pass_counter += 1
+        label = f"RoadPass-{_RoadHandler._pass_counter}"
+        super().__init__(label)
         self.rows: List[Dict] = []
 
     def way(self, w: osmium.osm.Way) -> None:  # type: ignore[attr-defined]

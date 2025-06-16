@@ -174,7 +174,7 @@ def build(regions: list[str], out_iso: pathlib.Path, work: pathlib.Path):
         poi_index_counter = 0
         for region in regions:
             pbf_path = work / f"{region.replace('/', '-')}.osm.pbf"
-            pois_df = load_poi_data(str(pbf_path), poi_tags=None)
+            pois_df = load_poi_data(pbf_path=str(pbf_path), logger=log, poi_tags=None)
             log.info("Loaded %d POIs from %s", len(pois_df), region)
 
             # 3.a) Collect `name` column into a single list of strings:

@@ -1,99 +1,77 @@
-# src/sdal_builder/etl.py
-#
-# Streaming-friendly implementation.
-# ----------------------------------
-# The original Pyrosm loading logic has been replaced with two lightweight
-# helpers from *sdal_osmium_stream.py*:
-#
-#     • extract_driving_roads()
-#     • extract_pois()
-#
-# Those helpers parse *.osm.pbf* files with **pyosmium** in true streaming
-# mode, so even very large regions (e.g. the full UK extract) no longer
-# blow up memory.  All downstream code continues to receive the same
-# GeoDataFrame formats as before.
-#
 from __future__ import annotations
 
-from typing import List, Optional
+import logging
+from pathlib import Path
+from typing import Iterable, Set, Union
 
 import geopandas as gpd
-from shapely.geometry import Point
+from .sdal_osmium_stream import extract_driving_roads   # road helper
 
-from .sdal_osmium_stream import extract_driving_roads, extract_pois
+LOG = logging.getLogger(__name__)
 
-
-# --------------------------------------------------------------------------- #
-# Road network                                                                #
-# --------------------------------------------------------------------------- #
-def load_road_network(pbf_path: str) -> gpd.GeoDataFrame:
+# ────────────────────────────────────────────────────────────────
+# Road network
+# ────────────────────────────────────────────────────────────────
+def load_road_network(pbf_path: Union[str, Path]) -> gpd.GeoDataFrame:
     """
-    Return the *driving* road network for ``pbf_path`` as a GeoDataFrame.
-
-    The schema (columns / CRS) matches what the old Pyrosm-based implementation
-    produced: ``id``, ``name``, ``highway``, ``oneway``, and ``geometry``
-    (EPSG:4326).
+    Return a GeoDataFrame of drivable roads from an OSM .pbf extract.
+    Uses the streaming _RoadHandler in sdal_osmium_stream.py.
     """
-    return extract_driving_roads(pbf_path)
+    LOG.info("Loading drivable road network …")
+    roads_df = extract_driving_roads(str(pbf_path))
+    LOG.info("Loaded %d road geometries", len(roads_df))
+    return roads_df
 
+# ────────────────────────────────────────────────────────────────
+# POIs via Pyrosm
+# ────────────────────────────────────────────────────────────────
+DEFAULT_POI_TAGS: Set[str] = {
+    "amenity", "shop", "tourism", "leisure", "historic",
+    "office", "craft", "man_made", "healthcare", "sport",
+    "emergency", "public_transport", "railway", "aeroway", "natural",
+}
 
-# --------------------------------------------------------------------------- #
-# Points of Interest (POIs)                                                   #
-# --------------------------------------------------------------------------- #
-_DEFAULT_POI_TAGS: List[str] = [
-    "amenity",
-    "shop",
-    "tourism",
-    "leisure",
-    "historic",
-    "natural",
-    "man_made",
-]
+def load_all_pois(
+    pbf_path: Union[str, Path],
+    logger: logging.Logger = LOG,
+    poi_tags: Iterable[str] | None = None,
+) -> gpd.GeoDataFrame:
+    """
+    Load POIs from an OSM extract using Pyrosm.get_pois.
+    Suppresses pandas fragmentation warnings at the source.
+    Consolidates the DataFrame in-place afterwards for safety.
+    """
+    from pyrosm import OSM
+    import warnings
+    import pandas as pd
+
+    # Suppress pandas PerformanceWarning from Pyrosm's prepare_geodataframe
+    warnings.filterwarnings(
+        "ignore",
+        category=pd.errors.PerformanceWarning,
+        module="pyrosm.pois"
+    )
+
+    tags = set(poi_tags) if poi_tags else DEFAULT_POI_TAGS
+    tag_filter = {k: True for k in tags}
+
+    logger.info("Loading POIs with Pyrosm.get_pois …")
+    poi_gdf = OSM(str(pbf_path)).get_pois(custom_filter=tag_filter)
+
+    # Defragment the DataFrame to ensure no future warnings
+    poi_gdf._consolidate_inplace()  # type: ignore[attr-defined]
+
+    logger.info("Loaded %d POIs after filtering", len(poi_gdf))
+    return poi_gdf
 
 
 def load_poi_data(
-    pbf_path: str,
-    poi_tags: Optional[List[str]] = None,
+    pbf_path: Union[str, Path],
+    logger: logging.Logger = LOG,
+    poi_tags: Iterable[str] | None = None,
 ) -> gpd.GeoDataFrame:
     """
-    Stream-extract POI nodes / ways with the given top-level keys.
-
-    Parameters
-    ----------
-    pbf_path
-        Path to the *.osm.pbf* file.
-    poi_tags
-        List of tag keys to keep (e.g. ``["amenity", "shop"]``).  If *None*,
-        a sensible default set identical to the legacy implementation is used.
-
-    Returns
-    -------
-    GeoDataFrame
-        Columns:
-            * ``geometry`` (POINT, EPSG:4326)
-            * ``name``     (string)
-            * one column per requested tag key (may be entirely null)
+    Main entry used by src/sdal_builder/main.py.
+    Forwards to load_all_pois, eliminating any dependency on extract_pois/_POIHandler.
     """
-    tags = poi_tags if poi_tags is not None else _DEFAULT_POI_TAGS
-
-    poi = extract_pois(pbf_path, tags)
-
-    # Guarantee every requested tag column exists, even if empty
-    for key in tags:
-        if key not in poi.columns:
-            poi[key] = None
-
-    # Ensure 'name' column exists
-    if "name" not in poi.columns:
-        poi["name"] = ""
-
-    # Build final column order: geometry ➔ name ➔ tag keys
-    ordered_cols = ["geometry", "name"] + [k for k in tags if k in poi.columns]
-    poi = poi[ordered_cols].copy()
-
-    # Convert any non-point geometries (e.g. polygon centroids) to centroids so
-    # the output remains consistent with historical behaviour.
-    if not poi.empty and not isinstance(poi.geometry.iloc[0], Point):
-        poi["geometry"] = poi.geometry.centroid
-
-    return poi
+    return load_all_pois(pbf_path, logger, poi_tags)

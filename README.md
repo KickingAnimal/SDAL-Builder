@@ -188,31 +188,104 @@ python validate_sdal_iso.py my_maps.iso
 
 ---
 
-## Burning SDAL ISO Images
+## Burning SDAL DVDs (Windows / ImgBurn)
 
-To ensure maximum compatibility, always use a reliable ISO writing tool and avoid using "quick burn" or "multi-session" options.
+Most SAAB / Mazda SDAL nav units are extremely picky about media and burn settings.  
+Use **good discs**, **correct booktype**, and **slow speed** – otherwise the car will simply say “NO DISC”.
 
-**Recommended steps:**
+Below is the recommended procedure for burning SDAL images (e.g. `WE_06Q4.iso`) using **ImgBurn** on Windows.
 
-1. **On Linux/macOS:**
-   Use `dd` (replace `/dev/sdX` with your USB/SD/DVD device, and double-check your target!):
+---
 
-   ```sh
-   sudo dd if=your_output.iso of=/dev/sdX bs=4M status=progress && sync
-   ```
+### 1. Requirements
 
-2. **On Windows:**
-   Use a trusted tool like [Rufus](https://rufus.ie/) or [balenaEtcher](https://www.balena.io/etcher/) and select the "ISO image mode" (not "ISOHybrid" or other custom formats).
-   Be sure to fully erase/re-format your target media before burning.
+- **ImgBurn** 2.5.x or later  
+- **Blank dual-layer DVD**:
+  - Prefer **Verbatim DVD+R DL**  
+  - DVD-R DL can work, but booktype settings don’t apply there
+- A burner that supports changing **Book Type** (bitsetting) for DVD+R DL
 
-3. **General recommendations:**
+---
 
-   * Always safely eject the device after writing.
-   * Do not use tools that "modify" the ISO or add extra boot sectors unless specifically required.
-   * Test the media on the intended target system before deployment.
+### 2. Start ImgBurn and load the image
 
-> **Compatibility Note:**
-> SDAL ISOs created by this project follow the SDAL PSF v1.7 spec, but downstream system compatibility may depend on SDAL implementation details, media quality, and burn method. If you encounter issues, try a different burning tool or medium.
+1. Launch **ImgBurn**.
+2. Choose **“Write image file to disc”**.
+3. Insert a blank DL disc.
+4. Load the correct image:
+   - If you have for ex.: `WE_06Q4.MDS`, **select the `.MDS` file**, not the `.ISO`.
+     - The `.MDS` holds proper **layer-break** information and is recommended in SDAL guides. (it is applicable in case you burning some Mazda or SAAB DVD SDAL image)
+   - If there is **no `.MDS`**, select the `.ISO` directly (e.g. `WE_06Q4.iso`).
+
+---
+
+### 3. Set BookType to DVD-ROM (for DVD+R DL)
+
+> Critical for many SDAL nav drives – without DVD-ROM booktype they often won’t recognise the disc.
+
+1. In ImgBurn, click the small **“book” icon** (Change Book Type) in the lower-right corner.
+2. In the dialog:
+   - Select your drive’s **manufacturer**.
+   - **“Change For”** → `DVD+R DL Media`.
+   - **“New Setting”** → `DVD-ROM`.
+3. Click **Change**, confirm success, then **OK**.
+
+If you are using **DVD-R DL**, booktype is fixed and this step doesn’t apply – but DVD+R DL with DVD-ROM booktype is strongly preferred.
+
+---
+
+### 4. Set write speed
+
+SDAL nav units (Saab, Mazda, etc.) are known to dislike fast burns.
+
+- Recommended **Write Speed**: **2x** or **2.4x**
+  - Mazda SDAL Western Europe instructions explicitly say **max 2x**.
+  - Saab/Mazda SDAL users report best results with **lowest speed** on Verbatim DL media.
+
+In ImgBurn:
+
+1. In the main window, set **Write Speed** to **2x** (or **2.4x** if 2x isn’t available).
+2. If the drive internally bumps it slightly, that’s usually OK.
+
+---
+
+### 5. Write mode & options
+
+Make sure you’re burning a proper video-style, single-session disc, not packet-writing.
+
+- **Write mode**: **Disc-At-Once (DAO)**  
+  SDAL guides explicitly state that incremental/packet writing makes discs unreadable in the car.
+- **Finalize Disc**: **Enabled** (close track/session). ImgBurn does this by default – don’t disable it.
+- Leave other advanced ImgBurn settings at **defaults** unless you know exactly why you’re changing them.
+
+---
+
+### 6. Burn the disc
+
+1. Click the **big burn button**.
+2. Let the burn finish without heavily using the PC (avoid causing buffer underruns).
+3. Optionally allow ImgBurn to **Verify** after writing:
+   - This adds time but **catches bad burns** and marginal media.
+
+---
+
+### 7. Test in the car
+
+1. Start the car and let voltage stabilise (engine running is best).
+2. Insert the disc into the nav drive.
+3. Wait:
+   - First boot after an update can take longer.
+   - Some SDAL discs may perform a small firmware update during first use; do **not** interrupt power.
+
+If the unit **doesn’t see the disc at all** (immediate “NO DISC” or ejection):
+
+- Re-check:
+  - Disc type (DVD+R DL, good brand).
+  - Booktype = **DVD-ROM** (for +R DL).
+  - Burn speed (2x / 2.4x).
+  - DAO + finalized.
+- Try a different blank disc (same good brand), and/or a different burner.
+- Confirm the drive still reads a **known-good original** nav disc – if not, the laser may be weak or dirty.
 
 ---
 

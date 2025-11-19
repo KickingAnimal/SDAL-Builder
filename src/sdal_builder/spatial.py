@@ -1,14 +1,3 @@
-"""
-Spatial helpers for SDAL builder
-———————————————
-• KD-tree:  nearest-neighbour lookup using scipy.cKDTree  
-• B+-tree:  on-disk index way_id (uint32) ➜ file-offset (uint64)
-
-bplustree’s default **IntSerializer** handles *keys* that are Python
-ints.  *Values*, however, must already be **bytes** whose length does
-not exceed ``value_size`` (8 bytes for a uint64).  Passing a plain int
-as the value triggered the earlier ``len(value)`` TypeError.
-"""
 from __future__ import annotations
 
 import struct
@@ -29,33 +18,40 @@ def build_kdtree(points: List[Tuple[float, float]]) -> cKDTree:
 
 def serialize_kdtree(kd: cKDTree) -> bytes:
     """
-    Serialize KD-tree nodes:  <uint32 idx><int32 x*1e6><int32 y*1e6>.
+    Serialize KD-tree nodes into SDAL-like format.
+    
+    Format (Big-Endian):
+    1. Header: uint32 (Total number of POI nodes)
+    2. Nodes: sequence of <uint32 idx><int32 x*1e6><int32 y*1e6>
     """
     buf = bytearray()
+    
+    poi_count = len(kd.data)
+    
+    # 1. Header: POI Count (uint32, Big-Endian) - 4 bytes
+    # Это дает приложению знать, сколько записей ожидать.
+    buf.extend(struct.pack(">I", poi_count)) 
+
+    # 2. Nodes data
     for idx, (x, y) in enumerate(kd.data):
-        buf.extend(struct.pack("<Iii", idx, int(x * 1e6), int(y * 1e6)))
+        # >Iii: Big-Endian, uint32 index, int32 lon, int32 lat
+        # ИСПРАВЛЕНИЕ: Смена на Big-Endian для всего содержимого (для соответствия SDAL)
+        buf.extend(struct.pack(">Iii", idx, int(x * 1e6), int(y * 1e6))) 
+
     return bytes(buf)
 
 # --------------------------------------------------------------------------- #
 # B+-tree helpers                                                             #
 # --------------------------------------------------------------------------- #
 
-_pack_u64 = struct.Struct("<Q").pack  # little-endian uint64
+# ИСПРАВЛЕНИЕ: Смена на Big-Endian (>)
+_pack_u64 = struct.Struct(">Q").pack  # Big-endian uint64
 
 def build_bplustree(offsets: Iterable[Tuple[int, int]], path: str) -> None:
     """
     Build an on-disk B+-tree mapping *way_id* (uint32 int) ➜ *offset* (uint64).
-    * bplustree*’s default serializer accepts **int** keys directly.
-    * Values **must** be bytes, so we pack the uint64 offset.
     """
     tree = bplustree.BPlusTree(path, key_size=4, value_size=8, order=50)
-    for way_id, offs in offsets:
-        tree.insert(way_id, _pack_u64(offs))
+    for way_id, offset in offsets:
+        tree[way_id] = _pack_u64(offset)
     tree.close()
-
-def dump_bplustree(path: str) -> bytes:
-    """
-    Return the raw bytes of a finished B+-tree file.
-    """
-    with open(path, "rb") as f:
-        return f.read()

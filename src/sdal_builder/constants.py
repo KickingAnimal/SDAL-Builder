@@ -226,15 +226,98 @@ HUFFMAN_TABLE = {
     "_EOF": "1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
 }
 
-CARTO_PARCEL_ID   = 100
-NAV_PARCEL_ID     = 120
-KDTREE_PARCEL_ID  = 150
-BTREE_PARCEL_ID   = 160
-DENS_PARCEL_ID    = 140  # Density overlay parcel ID
+# Compression types (SDAL 1.7)
+NO_COMPRESSION = 0
+SZIP_COMPRESSION = 1 # Используется для обозначения SZIP/Huffman
+UNCOMPRESSED_FLAG = 0
+
+#CARTO_PARCEL_ID   = 100
+#NAV_PARCEL_ID     = 120
+#KDTREE_PARCEL_ID  = 150
+#BTREE_PARCEL_ID   = 160
+#DENS_PARCEL_ID    = 140  # Density overlay parcel ID
 
 # New POI parcel ID for “all POI categories” overlay
-POI_NAME_PARCEL_ID   = 170  # Names of POIs
-POI_GEOM_PARCEL_ID   = 180  # Raw geometry payload (lat/lon) for each POI
-POI_INDEX_PARCEL_ID  = 190  # B+-tree index for POI offsets
+#POI_NAME_PARCEL_ID   = 170  # Names of POIs
+#POI_GEOM_PARCEL_ID   = 180  # Raw geometry payload (lat/lon) for each POI
+#POI_INDEX_PARCEL_ID  = 190  # B+-tree index for POI offsets
 
-UNCOMPRESSED_FLAG = 0
+# Parcel IDs (PIDs)
+CARTO_PARCEL_ID = 110
+NAV_PARCEL_ID = 111
+KDTREE_PARCEL_ID = 121
+BTREE_PARCEL_ID = 122
+DENS_PARCEL_ID = 140
+POI_NAME_PARCEL_ID = 160
+POI_GEOM_PARCEL_ID = 161
+POI_INDEX_PARCEL_ID = 162
+
+# Parcel IDs for INIT.SDL
+LOCALE_PARCEL_ID = 100
+SYMBOL_PARCEL_ID = 101
+
+# ----------------------------------------------------------------
+# Marker Table (type → byte, used in MTOC.SDL)
+# ----------------------------------------------------------------
+MARKER_TABLE = {
+    "REGION": b'R',
+    "STUB":   b'Z',
+    "AUDIO":  b'A',
+    "MAP":    b'M',
+    "INDEX":  b'I',
+    "DENS":   b'D',
+    "POI":    b'P',
+    "OTHER":  b'O',
+}
+
+# ----------------------------------------------------------------
+# Global Regional Grouping
+# ----------------------------------------------------------------
+
+# Grouping country codes (2-letter ISO) into map disc regions (для именования XXX1.SDL)
+GROUPS = {
+    # EUROPE (Existing + Expanded)
+    "BE": "BENELUX", "NL": "BENELUX", "LU": "BENELUX",
+    "DK": "DENSWE", "SE": "DENSWE", "NO": "DENSWE", "FI": "DENSWE",
+    "FR": "FRANCE",
+    "DE": "GERMANY",
+    "IT": "ITALY",
+    "ES": "IBERIA", "PT": "IBERIA",
+    "GB": "UK", "IE": "UK",
+    "AT": "SWIAUS", "CH": "SWIAUS",
+    "CZ": "CEUROPE", "PL": "CEUROPE", "SK": "CEUROPE", "HU": "CEUROPE", 
+    "GR": "GREBALK", "BG": "GREBALK", "RO": "GREBALK", 
+    "TR": "TURKEY", "RU": "RUSSIA", "UA": "RUSSIA",
+    
+    # NORTH AMERICA
+    "US": "NAFTA", "CA": "NAFTA", "MX": "NAFTA",
+    
+    # SOUTH AMERICA
+    "BR": "S_AMERICA", "AR": "S_AMERICA", "CO": "S_AMERICA", "CL": "S_AMERICA",
+    
+    # ASIA
+    "JP": "JAPAN", "KR": "KOREA", "CN": "CHINA", "IN": "INDIA",
+    
+    # AUSTRALIA/OCEANIA
+    "AU": "AUSNZ", "NZ": "AUSNZ",
+    
+    # MIDDLE EAST / AFRICA
+    "SA": "MIDEAST", "AE": "MIDEAST", "EG": "MIDEAST", 
+    "ZA": "SAF", "KE": "AFRICA", 
+    
+    # Default fallback is usually the region name itself (e.g. CY -> CY)
+}
+
+# Continent code mapping (used to derive disc code, e.g. DENS_EU0.SDL)
+# Maps slug component (e.g. 'europe') to a 2-letter disc code.
+CONTINENT_MAP = {
+    "EUROPE": "EU",
+    "ASIA": "AS",
+    "NORTH-AMERICA": "NA",
+    "SOUTH-AMERICA": "SA",
+    "AFRICA": "AF",
+    "AUSTRALIA": "AU",
+    "OCEANIA": "OC",
+    "MIDEAST": "ME",
+    "UNKNOWN": "XX",
+}

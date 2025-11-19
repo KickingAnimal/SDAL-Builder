@@ -10,4 +10,4 @@ pycdlib
 tqdm
 requests
 dahuffman
-
+numpy

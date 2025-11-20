@@ -1,3 +1,4 @@
+# src/sdal_builder/etl.py
 from __future__ import annotations
 
 import logging
@@ -19,7 +20,7 @@ LOG = logging.getLogger(__name__)
 # POIs (Теги и загрузчик)
 # ────────────────────────────────────────────────────────────────
 
-# ВОССТАНОВЛЕННЫЙ ОРИГИНАЛЬНЫЙ НАБОР POI-ТЕГОВ
+# ПОЛНЫЙ НАБОР POI-ТЕГОВ
 DEFAULT_POI_TAGS: Set[str] = {
     "amenity", "shop", "tourism", "leisure", "historic",
     "office", "craft", "man_made", "healthcare", "sport",
@@ -33,10 +34,7 @@ def load_all_pois(
     poi_tags: Iterable[str] | None = None,
 ) -> gpd.GeoDataFrame:
     """
-    Load POIs from an OSM extract using Pyrosm.get_pois.
-
-    - Подавляет pandas PerformanceWarning от Pyrosm.
-    - Консолидирует DataFrame in-place, чтобы не было фрагментации.
+    Load POIs from an OSM extract using Pyrosm.get_pois (Vectorized Filter).
     """
     try:
         from pyrosm import OSM
@@ -54,16 +52,8 @@ def load_all_pois(
     tags = set(poi_tags) if poi_tags else DEFAULT_POI_TAGS
     tag_filter = {k: True for k in tags}
 
-    logger.info("Loading POIs with Pyrosm.get_pois (Vectorized Filter)... This may take a while on large PBFs.")
+    logger.info("Loading POIs with Pyrosm.get_pois (Vectorized Filter)...")
     poi_gdf = OSM(str(pbf_path)).get_pois(custom_filter=tag_filter)
-
-    # Defragment DataFrame (иначе Pyrosm иногда оставляет «дырки»)
-    try:
-        # ИСПРАВЛЕНИЕ: Удаляем вызов консолидации, так как он может быть нестабилен
-        # poi_gdf._consolidate_inplace()  # type: ignore[attr-defined]
-        pass
-    except Exception:
-        pass
 
     logger.info("Loaded %d POIs after filtering", len(poi_gdf))
     return poi_gdf
@@ -76,7 +66,7 @@ def load_poi_data(
 ) -> gpd.GeoDataFrame:
     """
     Main entry used by src/sdal_builder/main.py.
-    Forwards to load_all_pois, eliminating any dependency on legacy extract_pois.
+    Forwards to load_all_pois.
     """
     return load_all_pois(pbf_path, logger, poi_tags)
 

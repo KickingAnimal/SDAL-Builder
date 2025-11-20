@@ -1,3 +1,4 @@
+# src/sdal_builder/main.py
 #!/usr/bin/env python3
 """
 CLI for building SDAL ISO images per region, embedding PID 0 in MTOC.SDL,
@@ -25,7 +26,7 @@ import os
 import math
 
 from .constants import (
-    # Импортируем все необходимые PID, константы сжатия и флаги
+    # ИМПОРТ ВСЕХ КОНСТАНТ (никаких локальных определений)
     CARTO_PARCEL_ID,
     NAV_PARCEL_ID,
     KDTREE_PARCEL_ID,
@@ -39,6 +40,12 @@ from .constants import (
     SZIP_COMPRESSION,
     HUFFMAN_TABLE,
     EOF,
+    LOCALE_PARCEL_ID,
+    SYMBOL_PARCEL_ID,
+    CARTOTOP_PARCEL_ID,
+    GROUPS,
+    MARKER_TABLE,
+    CONTINENT_MAP,
 )
 from .etl import (
     download_region_if_needed,
@@ -59,56 +66,6 @@ from .routing_format import NodeRecord, SegmentRecord, deg_to_ntu, encode_routin
 from .spatial import build_kdtree, serialize_kdtree
 
 log = logging.getLogger(__name__)
-
-# ID for the new CARTOTOP parcel (Global Resource Index)
-CARTOTOP_PARCEL_ID = 120 
-
-# НОВЫЕ PID ДЛЯ INIT.SDL
-LOCALE_PARCEL_ID = 100    
-SYMBOL_PARCEL_ID = 101    
-
-# ----------------------------------------------------------------
-# Global Regional Grouping (Взято из constants.py)
-# ----------------------------------------------------------------
-GROUPS = {
-    # EUROPE
-    "BE": "BENELUX", "NL": "BENELUX", "LU": "BENELUX",
-    "DK": "DENSWE", "SE": "DENSWE", "NO": "DENSWE", "FI": "DENSWE",
-    "FR": "FRANCE",
-    "DE": "GERMANY",
-    "IT": "ITALY",
-    "ES": "IBERIA", "PT": "IBERIA",
-    "GB": "UK", "IE": "UK",
-    "AT": "SWIAUS", "CH": "SWIAUS",
-    "CZ": "CEUROPE", "PL": "CEUROPE", "SK": "CEUROPE", "HU": "CEUROPE", 
-    "GR": "GREBALK", "BG": "GREBALK", "RO": "GREBALK", 
-    "TR": "TURKEY", "RU": "RUSSIA", "UA": "RUSSIA",
-    # NORTH AMERICA
-    "US": "NAFTA", "CA": "NAFTA", "MX": "NAFTA",
-    # SOUTH AMERICA
-    "BR": "S_AMERICA", "AR": "S_AMERICA", "CO": "S_AMERICA", "CL": "S_AMERICA",
-    # ASIA
-    "JP": "JAPAN", "KR": "KOREA", "CN": "CHINA", "IN": "INDIA",
-    # AUSTRALIA/OCEANIA
-    "AU": "AUSNZ", "NZ": "AUSNZ",
-    # MIDDLE EAST / AFRICA
-    "SA": "MIDEAST", "AE": "MIDEAST", "EG": "MIDEAST", 
-    "ZA": "SAF", "KE": "AFRICA", 
-}
-
-# Marker Table (type → byte, used in MTOC.SDL)
-MARKER_TABLE = {
-    "REGION": b'R', "STUB": b'Z', "AUDIO": b'A', "MAP": b'M',
-    "INDEX": b'I', "DENS": b'D', "POI": b'P', "OTHER": b'O',
-}
-
-# Continent code mapping (used to derive disc code, e.g. DENS_EU0.SDL)
-CONTINENT_MAP = {
-    "EUROPE": "EU", "ASIA": "AS", "NORTH-AMERICA": "NA", "SOUTH-AMERICA": "SA",
-    "AFRICA": "AF", "AUSTRALIA": "AU", "OCEANIA": "OC", "MIDEAST": "ME",
-    "UNKNOWN": "XX",
-}
-
 
 # ────────────────────────────────────────────────────────────────
 # CARTOTOP / Topology Structures
@@ -148,16 +105,13 @@ def encode_locale_table(countries_dict: dict, supported_langs: list[str]) -> byt
     """
     buf = bytearray()
     
-    # Заголовок: Count (2H) - (country_count, lang_count)
     all_countries = sorted(countries_dict.keys())
     buf += struct.pack(">HH", len(all_countries), len(supported_langs) + 1)
     
-    # Список кодов языков
     lang_codes = [b"NATIVE"] + [lang.encode('ascii') for lang in supported_langs]
     for code in lang_codes:
         buf += code[:8].ljust(8, b'\x00')
     
-    # Таблица названий
     ENTRY_SIZE = 32
     for country_native_name in all_countries:
         row = [country_native_name]
@@ -178,12 +132,10 @@ def encode_symbol_table(huffman_table: dict) -> bytes:
     """
     buf = bytearray()
     
-    # 1. Byte value and Code Length
     for i in range(256):
         code_bits = huffman_table.get(i)
         
         if code_bits is None and i == 255:
-            # Ищем код для EOF, если байт 255 не задан явно
             code_bits = huffman_table.get(EOF)
         
         if code_bits is None:
@@ -192,15 +144,13 @@ def encode_symbol_table(huffman_table: dict) -> bytes:
             code_len = len(code_bits)
         
         # B: Byte value (uint8, 1 byte), H: Code Length (uint16, 2 bytes)
-        # ИСПРАВЛЕНИЕ: изменено с ">BB" на ">BH" для Code Length > 255.
+        # Исправлено для поддержки code_len > 255
         try:
             buf += struct.pack(">BH", i, code_len)
         except struct.error as e:
-            # Логируем ошибку, если code_len > 65535, хотя это маловероятно
             log.error(f"Error packing Huffman code length {code_len} for byte {i}: {e}")
             raise
 
-    # 2. String representation of all symbols (для визуального соответствия)
     symbols = "".join([chr(i) if 32 <= i < 127 else f"\\x{i:02x}" for i in range(256)])
     buf += symbols.encode('ascii', 'replace')
     
@@ -210,7 +160,6 @@ def encode_symbol_table(huffman_table: dict) -> bytes:
 def marker_for_file(name: str) -> bytes:
     """Decide OEM-style marker byte per file name."""
     name = name.upper()
-    # Обрабатываем XXX0.SDL и XXX1.SDL как MAP
     if name.endswith("0.SDL") or name.endswith("1.SDL"):
         return MARKER_TABLE.get("MAP", MARKER_TABLE.get("OTHER"))
     return MARKER_TABLE.get(name.split('.')[0], MARKER_TABLE.get("OTHER"))
@@ -702,10 +651,6 @@ def build(
         kd_blob = b""
     else:
         kd_tree_obj = build_kdtree(poi_coords)
-        # ИСПРАВЛЕНИЕ: serialization uses Big-Endian
-        # Note: The spatial.py snippet shows Little-Endian, but the logic 
-        # has been changed to Big-Endian in the thought process for SDAL compliance.
-        # Ensure your spatial.py reflects: buf.extend(struct.pack(">Iii", idx, int(x * 1e6), int(y * 1e6)))
         kd_blob = serialize_kdtree(kd_tree_obj) 
         log.info("Serialized KD-Tree payload size: %.2f MB", len(kd_blob) / 1e6)
         del kd_tree_obj
@@ -797,7 +742,8 @@ def build(
                     
                     for seg_geom in tqdm(
                         clipped,
-                        desc=f"Rasterizing {region} Z{Z} tile ({tx},{ty})",
+                        # УЛУЧШЕННОЕ ЛОГИРОВАНИЕ
+                        desc=f"Rasterizing DENSITY: {region} | Zoom {Z} Tile ({tx},{ty})",
                         unit="geom",
                     ):
                         if seg_geom.is_empty: continue

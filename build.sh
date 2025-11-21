@@ -7,6 +7,9 @@ set -euo pipefail
 #   ./build.sh europe/cyprus europe/spain
 #   ./build.sh europe/cyprus europe/spain mymaps.iso
 #   ./build.sh --clean
+#
+# NEW: Pass optional flags like --format-mode SDAL, --supp-lang DAN,ENG
+#   ./build.sh europe/cyprus --format-mode SDAL --supp-lang ENG
 
 # Change to the script’s directory (project root)
 cd "$(dirname "$0")"
@@ -31,36 +34,60 @@ if [[ "${1-}" == "--clean" ]]; then
   exit 0
 fi
 
-if [[ $# -lt 1 ]]; then
+# ----------------------------------------------------------------
+# Аргументный парсер для разделения флагов и позиционных аргументов
+# ----------------------------------------------------------------
+
+POSITIONAL_ARGS=() # regions + optional out_iso
+FLAG_ARGS=()       # --format-mode, --supp-lang, -v, etc.
+
+for arg in "$@"; do
+    # Проверяем, является ли аргумент флагом (начинается с - или --)
+    if [[ "$arg" == --* ]] || [[ "$arg" == -* ]]; then
+        FLAG_ARGS+=("$arg")
+    else
+        POSITIONAL_ARGS+=("$arg")
+    fi
+done
+
+if [[ ${#POSITIONAL_ARGS[@]} -lt 1 ]]; then
   echo "Usage: $0 [--clean] <region1> [region2 ...] [<out_iso>]"
+  echo "Note: Use --format-mode {OEM,SDAL} to switch file structure. Default is OEM."
   exit 1
 fi
 
-# Determine if last arg is an ISO filename (ends with .iso) or a region slug
-if [[ "${@: -1}" == *.iso ]]; then
-  OUT="${@: -1}"
-  REGIONS=("${@:1:$(($#-1))}")
+# Определяем, является ли последний позиционный аргумент именем ISO файла.
+LAST_POS_ARG="${POSITIONAL_ARGS[@]: -1}"
+
+if [[ "$LAST_POS_ARG" == *.iso ]]; then
+  OUT="$LAST_POS_ARG"
+  # Регионы - все позиционные аргументы, кроме последнего
+  REGIONS=("${POSITIONAL_ARGS[@]:0:$((${#POSITIONAL_ARGS[@]}-1))}")
 else
-  REGIONS=("$@")
-  # Derive OUT from the first region slug
+  REGIONS=("${POSITIONAL_ARGS[@]}")
+  # Выводим имя OUT из первого региона
   SLUG="${REGIONS[0]##*/}"
   OUT="${SLUG}.iso"
 fi
+
+# Определяем рабочую директорию
+WORK_DIR="${ROOT}/build"
+
 
 # 1) Create & activate venv
 python3 -m venv .venv
 # shellcheck source=/dev/null
 source .venv/bin/activate
+echo "Venv activated. Python: $(which python)"
 
-# 2) Install dependencies
-pip install -r requirements.txt
+# 2) Install/update dependencies
+.venv/bin/python3 -m pip install -e .
 
-# 3) Define the working directory name (e.g., based on the output file)
-# The working directory is now REQUIRED. We use a standardized name.
-WORK_DIR="${ROOT}/build"
+# 3) Execute the builder (передавая все флаги в конце)
+echo "Building regions: ${REGIONS[*]} into $OUT (work_dir: $WORK_DIR)"
 
-# 4) Run the builder
-echo "Running sdal_build.py for ${#REGIONS[@]} regions: ${REGIONS[*]} -> $OUT (Work dir: $WORK_DIR)"
+# Запускаем через wrapper sdal_build.py, который настраивает PYTHONPATH
+# Используем безопасный синтаксис ${ARR[@]+"${ARR[@]}"} для macOS/Bash 3.2
+python3 "$ROOT/sdal_build.py" "${REGIONS[@]}" --out "$OUT" --work "$WORK_DIR" ${FLAG_ARGS[@]+"${FLAG_ARGS[@]}"}
 
-# THIS IS THE CORRECTED LINE: passing --work argument
-python3 "$ROOT/sdal_build.py" "${REGIONS[@]}" --out "$OUT" --work "$WORK_DIR"
+echo "Success! ISO image is available at $OUT"

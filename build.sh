@@ -21,6 +21,7 @@ if [[ "${1-}" == "--clean" ]]; then
   echo "Performing cleanup..."
   # Remove Python bytecode caches
   rm -rf src/sdal_builder/__pycache__
+  rm -rf src/sdal_builder/__init__.py
 
   # Remove virtual environment
   rm -rf .venv

@@ -1,7 +1,41 @@
+# src/sdal_builder/constants.py
+
+EOF = "_EOF"
+
 # ================================================================
-# HUFFMAN TABLE 
+# SDAL BASE CONSTANTS (PID, FLAGS, COMPRESSION)
 # ================================================================
 
+# Parcel IDs (PIDs)
+GLB_MEDIA_HEADER_PID = 19     # Parcel ID for GlbMediaHeader/RegionHeader (Chapter 1)
+CARTO_PARCEL_ID = 110
+NAV_PARCEL_ID = 111
+CARTOTOP_PARCEL_ID = 120
+BTREE_PARCEL_ID = 122
+ROUTING_PARCEL_ID = 130       # Unified Routing PID
+DENS_PARCEL_ID = 140
+POI_NAME_PARCEL_ID = 160
+POI_GEOM_PARCEL_ID = 161
+POI_INDEX_PARCEL_ID = 162
+GLB_KD_TREE_PID = 255         # Parcel ID for Global KD-tree Index (IDxPclHdr_t)
+
+LOCALE_PARCEL_ID = 100
+SYMBOL_PARCEL_ID = 101
+
+# Compression types (Canonical SDAL 1.7)
+NO_COMPRESSION = 0x01           # NO_PARCEL_COMPRESSION (Функциональный выбор для строк)
+SZIP_COMPRESSION = 0x04         # SZIP_PARCEL_COMPRESSION_EXT (Оставлен для декларации)
+UNCOMPRESSED_FLAG = 0xFFFF      # Value for usPayloadSize when compressed payload > 65535 or compression is used
+
+# ================================================================
+# GLB_MEDIA_HEADER Constants
+# ================================================================
+
+PSF_VERSION_MAJOR = 1
+PSF_VERSION_MINOR = 7
+PSF_VERSION_YEAR = 1999
+
+# Huffman table (Stubbed, actual data would be large dict)
 HUFFMAN_TABLE = {
     0: "000",
     1: "001",
@@ -222,50 +256,36 @@ HUFFMAN_TABLE = {
     216: "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111110",
     217: "1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111110",
     "_EOF": "1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
-}
+} # Should be 256 entries
 
-EOF = "_EOF"
-"""Маркер конца файла для Huffman-сжатия."""
-
-# Canonical Compression Types (используются в OEM-дисках)
-NO_COMPRESSION = 0x01  # NO_PARCEL_COMPRESSION (для бинарных данных: карты, роутинг)
-SZIP_COMPRESSION = 0x04 # SZIP_PARCEL_COMPRESSION_EXT (для строк: POI names, road names)
-
-UNCOMPRESSED_FLAG = 0xFFFF # Используется в usPayloadSize для SZIP-парселов
-
-# Parcel IDs (PIDs)
-CARTO_PARCEL_ID = 110
-NAV_PARCEL_ID = 111
-KDTREE_PARCEL_ID = 121
-BTREE_PARCEL_ID = 122
-DENS_PARCEL_ID = 140
-POI_NAME_PARCEL_ID = 160
-POI_GEOM_PARCEL_ID = 161
-POI_INDEX_PARCEL_ID = 162
-
-# Parcel IDs for INIT.SDL (Global Media File)
-LOCALE_PARCEL_ID = 100
-SYMBOL_PARCEL_ID = 101
-CARTOTOP_PARCEL_ID = 120
-
-# ================================================================
-# Global Tables (для main.py)
-# ================================================================
+# Grouping country codes (2-letter ISO) into map disc regions
 MARKER_TABLE = {
     "REGION": b'R', "STUB": b'Z', "AUDIO": b'A', "MAP": b'M',
     "INDEX": b'I', "DENS": b'D', "POI": b'P', "OTHER": b'O',
 }
 
 GROUPS = {
-    "BE": "BENELUX", "NL": "BENELUX", "LU": "BENELUX", "DK": "DENSWE", "SE": "DENSWE", 
-    "NO": "DENSWE", "FI": "DENSWE", "FR": "FRANCE", "DE": "GERMANY", "IT": "ITALY",
-    "ES": "IBERIA", "PT": "IBERIA", "GB": "UK", "IE": "UK", "AT": "SWIAUS", "CH": "SWIAUS",
-    "CZ": "CEUROPE", "PL": "CEUROPE", "SK": "CEUROPE", "HU": "CEUROPE", "GR": "GREBALK", 
-    "BG": "GREBALK", "RO": "GREBALK", "TR": "TURKEY", "RU": "RUSSIA", "UA": "RUSSIA",
-    "US": "NAFTA", "CA": "NAFTA", "MX": "NAFTA", "BR": "S_AMERICA", "AR": "S_AMERICA", 
-    "CO": "S_AMERICA", "CL": "S_AMERICA", "JP": "JAPAN", "KR": "KOREA", "CN": "CHINA", 
-    "IN": "INDIA", "AU": "AUSNZ", "NZ": "AUSNZ", "SA": "MIDEAST", "AE": "MIDEAST", 
-    "EG": "MIDEAST", "ZA": "SAF", "KE": "AFRICA", 
+    "BE": "BENELUX", "NL": "BENELUX", "LU": "BENELUX",
+    "DK": "DENSWE", "SE": "DENSWE", "NO": "DENSWE", "FI": "DENSWE",
+    "FR": "FRANCE",
+    "DE": "GERMANY",
+    "IT": "ITALY",
+    "ES": "IBERIA", "PT": "IBERIA",
+    "GB": "UK", "IE": "UK",
+    "AT": "SWIAUS", "CH": "SWIAUS",
+    "CZ": "CEUROPE", "PL": "CEUROPE", "SK": "CEUROPE", "HU": "CEUROPE", 
+    "GR": "GREBALK", "BG": "GREBALK", "RO": "GREBALK", 
+    "TR": "TURKEY", "RU": "RUSSIA", "UA": "RUSSIA",
+    
+    "US": "NAFTA", "CA": "NAFTA", "MX": "NAFTA",
+    
+    "BR": "S_AMERICA", "AR": "S_AMERICA", "CO": "S_AMERICA", "CL": "S_AMERICA",
+    
+    "JP": "JAPAN", "KR": "KOREA", "CN": "CHINA", "IN": "INDIA",
+    
+    "AU": "AUSNZ", "NZ": "AUSNZ", 
+    "SA": "MIDEAST", "AE": "MIDEAST", "EG": "MIDEAST", 
+    "ZA": "SAF", "KE": "AFRICA", 
 }
 
 CONTINENT_MAP = {

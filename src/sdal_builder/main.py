@@ -1,11 +1,7 @@
 # src/sdal_builder/main.py
 #!/usr/bin/env python3
 """
-CLI for building SDAL ISO images per region, embedding PID 0 in MTOC.SDL,
-generating multi‐tile density overlays *grouped per OEM region*,
-including CARTOTOP.SDL for global resource indexing,
-and including all OSM POIs,
-without blowing out memory by holding everything in a single GeoDataFrame.
+CLI for building SDAL ISO image from OSM data.
 """
 import argparse
 import logging
@@ -25,28 +21,8 @@ import struct
 import os
 import math
 
-from .constants import (
-    # ИМПОРТ ВСЕХ КОНСТАНТ (никаких локальных определений)
-    CARTO_PARCEL_ID,
-    NAV_PARCEL_ID,
-    KDTREE_PARCEL_ID,
-    BTREE_PARCEL_ID,
-    DENS_PARCEL_ID,
-    POI_NAME_PARCEL_ID,
-    POI_GEOM_PARCEL_ID,
-    POI_INDEX_PARCEL_ID,
-    UNCOMPRESSED_FLAG,
-    NO_COMPRESSION, 
-    SZIP_COMPRESSION,
-    HUFFMAN_TABLE,
-    EOF,
-    LOCALE_PARCEL_ID,
-    SYMBOL_PARCEL_ID,
-    CARTOTOP_PARCEL_ID,
-    GROUPS,
-    MARKER_TABLE,
-    CONTINENT_MAP,
-)
+# Импортируем все необходимые модули и константы
+from .constants import *
 from .etl import (
     download_region_if_needed,
     region_exists,
@@ -59,10 +35,13 @@ from .encoder import (
     encode_cartography,
     encode_btree,
     encode_poi_index,
+    # szip_compress удален
+    MAX_USHORT,
+    PCL_HEADER_SIZE
 )
 from .iso import build_iso
 from .translations import countries
-from .routing_format import NodeRecord, SegmentRecord, deg_to_ntu, encode_routing_parcel
+from .routing_format import NodeRecord, SegmentRecord, deg_to_ntu, encode_routing_parcel 
 from .spatial import build_kdtree, serialize_kdtree
 
 log = logging.getLogger(__name__)
@@ -96,17 +75,96 @@ class ParcelBuilder:
     compress: int = NO_COMPRESSION 
 
 # ────────────────────────────────────────────────────────────────
-# Helpers
+# Global Header Encoding (GlbMediaHeader_t, CompressInfo_t)
 # ────────────────────────────────────────────────────────────────
+
+def encode_compress_info() -> bytes:
+    """
+    Encodes CompressInfo_t.
+    """
+    # usCompressInfoCount (H) = 1, usCompressInfoReserved (H) = 0
+    # Структура: I H I B B (8+2+4+1+1) = 16 байт
+    element = struct.pack(">IHIBB", 0, 0, 0, 0, 0)
+    
+    return struct.pack(">HH", 1, 0) + element
+
+
+def encode_glb_media_header(
+    sdl_files: list[pathlib.Path], 
+    regions: list[str], 
+    supp_langs: list[str],
+    offset_locale: int, 
+    offset_compress: int
+) -> bytes:
+    """
+    Encodes GlbMediaHeader_t (PID 19).
+    Структура 512 байт, включая все необходимые поля Global Media Index.
+    """
+    
+    header = bytearray()
+    
+    # 1. PSF Version/IDs (H H H H H B B) [12 bytes]
+    header.extend(struct.pack(">HHHHHBB", PSF_VERSION_MAJOR, PSF_VERSION_MINOR, PSF_VERSION_YEAR, 0, 0, 0, 0))
+    
+    # usMaxPclCount (H), usMaxRegions (H) [4 bytes]
+    header.extend(struct.pack(">HH", 0xFFFF, len(regions)))
+    
+    # ulMapIDTblOffset (I) [4 bytes]
+    header.extend(struct.pack(">I", 0))
+    
+    # 2. ucaParcelSizes[256] (256 bytes)
+    parcel_sizes = bytearray(256)
+    # List of PIDs we generate, all using size index 0
+    generated_pids = [
+        GLB_MEDIA_HEADER_PID, LOCALE_PARCEL_ID, SYMBOL_PARCEL_ID, 
+        CARTO_PARCEL_ID, BTREE_PARCEL_ID, ROUTING_PARCEL_ID, 
+        DENS_PARCEL_ID, POI_NAME_PARCEL_ID, POI_GEOM_PARCEL_ID, 
+        POI_INDEX_PARCEL_ID, GLB_KD_TREE_PID, NAV_PARCEL_ID
+    ]
+    
+    for pid in generated_pids:
+        if 0 <= pid < 256:
+            parcel_sizes[pid] = 0 # Size Index 0 for 4096 byte unit
+            
+    header.extend(parcel_sizes)
+    
+    # 3. Global Media Index Pointers (H*6 + H*2 + H*2 + I) 
+    
+    # Metadata Index Pointers (6 x H, 12 bytes)
+    header.extend(struct.pack(">HHHHHH", 
+                             0, # usMetadataLevelTableOffset (Placeholder 0)
+                             0, # usMetadataLevelTableCount (Placeholder 0)
+                             0, # usChainIDIndexOffset (Placeholder 0)
+                             0, # usChainIDParcelCount (Placeholder 0)
+                             0, # usFeatTypeIndexOffset (Placeholder 0)
+                             0  # usFeatTypeIndexLen (Placeholder 0)
+                             ))
+    
+    # Locale Index (4 bytes)
+    header.extend(struct.pack(">HH", offset_locale, 0xFFFF)) 
+    
+    # Compress Info Index (4 bytes)
+    header.extend(struct.pack(">HH", offset_compress, 1))
+    
+    # ulFileSize (I) [4 bytes]
+    header.extend(struct.pack(">I", 0))
+    
+    # Padding to 512 bytes
+    if len(header) < 512:
+         header.extend(b'\x00' * (512 - len(header)))
+
+    return bytes(header)
+
 
 def encode_locale_table(countries_dict: dict, supported_langs: list[str]) -> bytes:
     """
-    Кодирует словарь стран (translations.py) в бинарный формат для LOCALE_PARCEL.
+    Кодирует словарь стран в бинарный формат для LOCALE_PARCEL.
     """
     buf = bytearray()
     
     all_countries = sorted(countries_dict.keys())
-    buf += struct.pack(">HH", len(all_countries), len(supported_langs) + 1)
+    # Header: ulCountryCount (I), ulLangCount (I)
+    buf += struct.pack(">II", len(all_countries), len(supported_langs) + 1)
     
     lang_codes = [b"NATIVE"] + [lang.encode('ascii') for lang in supported_langs]
     for code in lang_codes:
@@ -128,33 +186,253 @@ def encode_locale_table(countries_dict: dict, supported_langs: list[str]) -> byt
 
 def encode_symbol_table(huffman_table: dict) -> bytes:
     """
-    Кодирует таблицу Huffman-кодов (constants.py) в бинарный формат.
+    Кодирует таблицу Huffman-кодов (stubbed).
     """
     buf = bytearray()
     
+    # Упрощенная заглушка для Symbol Table (PID 101) - 256 * 3 + 256 байт
     for i in range(256):
-        code_bits = huffman_table.get(i)
-        
-        if code_bits is None and i == 255:
-            code_bits = huffman_table.get(EOF)
-        
-        if code_bits is None:
-            code_len = 0
-        else:
-            code_len = len(code_bits)
-        
-        # B: Byte value (uint8, 1 byte), H: Code Length (uint16, 2 bytes)
-        # Исправлено для поддержки code_len > 255
-        try:
-            buf += struct.pack(">BH", i, code_len)
-        except struct.error as e:
-            log.error(f"Error packing Huffman code length {code_len} for byte {i}: {e}")
-            raise
+        code_len = 0 # Length 0
+        buf += struct.pack(">BH", i, code_len)
 
     symbols = "".join([chr(i) if 32 <= i < 127 else f"\\x{i:02x}" for i in range(256)])
     buf += symbols.encode('ascii', 'replace')
     
     return bytes(buf)
+
+
+# ────────────────────────────────────────────────────────────────
+# Region Header (RgnHdr_t) for SDAL mode
+# ────────────────────────────────────────────────────────────────
+
+_RGN_HDR_SIZE = 512 
+
+def _encode_region_header(db_id: int) -> bytes:
+    """
+    Encodes a minimal, structurally correct 512-byte Region Header (RgnHdr_t).
+    """
+    header = bytearray()
+    
+    # 1. RgnHdr_t core fields (4 * I + 4 * H) [24 bytes]
+    # ulDbId (I), ulReserved (I), ulRegionOffsetUnits (I), ulRegionLengthUnits (I)
+    header.extend(struct.pack(">IIII", db_id, 0, 0, 0))
+    
+    # usRgnHdrMajorVer, usRgnHdrMinorVer, usRgnHdrYear, usReserved (4 x H)
+    header.extend(struct.pack(">HHHH", 1, 7, 1999, 0))
+    
+    # 2. ucLayerPclDesc[256] (Layer Parcel Descriptor Table) (256 bytes)
+    layer_pcl_desc = bytearray(256)
+    # Layer 0 (Carto) and Layer 1 (Routing) use size index 0 by convention
+    if CARTO_PARCEL_ID < 256: layer_pcl_desc[CARTO_PARCEL_ID] = 0 
+    if ROUTING_PARCEL_ID < 256: layer_pcl_desc[ROUTING_PARCEL_ID] = 0 
+    header.extend(layer_pcl_desc) # 256 bytes
+    
+    # 3. Padding/Reserved (Remaining bytes to 512)
+    if len(header) < _RGN_HDR_SIZE:
+        header.extend(b'\x00' * (_RGN_HDR_SIZE - len(header)))
+        
+    return bytes(header)
+
+
+# ────────────────────────────────────────────────────────────────
+# Region File Building Functions (Switchable)
+# ────────────────────────────────────────────────────────────────
+
+def build_region_sdl_file_sdal(out_path: pathlib.Path, 
+                               db_id: int, 
+                               sdl_name: str, 
+                               parcel_builders: List[ParcelBuilder],
+                               topology_entries: List[TopologyEntry]):
+    """
+    Builds a regional .SDL file in SDAL mode: RgnHdr_t (512B + padding) + Parcels.
+    """
+    unit_shift = 12
+    unit_size = 1 << unit_shift
+    
+    # 1. Write RgnHdr_t (512 bytes)
+    region_header = _encode_region_header(db_id)
+    
+    region_header_size = len(region_header)
+    # RgnHdr_t is written and padded to the next unit boundary (4096 bytes)
+    pad_to_unit = (-region_header_size) & (unit_size - 1)
+    
+    # Offset of the first actual parcel payload (in bytes)
+    offset_bytes = region_header_size + pad_to_unit
+    
+    with open(out_path, "wb") as f:
+        f.write(region_header)
+        if pad_to_unit:
+            f.write(b'\x00' * pad_to_unit)
+
+        # 2. Write Data Parcels (PclHdr_t + Payload)
+        for pb in parcel_builders:
+            # Offset units calculation respects the header/padding at the start of the file
+            offset_units = offset_bytes >> unit_shift
+            
+            parcel_bytes = pb.make(offset_units) 
+            
+            f.write(parcel_bytes)
+            pad = (-len(parcel_bytes)) & (unit_size - 1)
+            if pad:
+                f.write(b"\x00" * pad)
+            offset_bytes += len(parcel_bytes) + pad
+            
+            topology_entries.append(
+                # Topology Entry's offset is based on the whole file, including RgnHdr_t.
+                TopologyEntry(
+                    db_id=db_id,
+                    sdl_name=sdl_name,
+                    parcel_id=pb.pid,
+                    offset_units=offset_units,
+                    rect_min_lat_ntu=pb.rect[0],
+                    rect_max_lat_ntu=pb.rect[1],
+                    rect_min_lon_ntu=pb.rect[2],
+                    rect_max_lon_ntu=pb.rect[3],
+                    scale_min=pb.scale_min,
+                    scale_max=pb.scale_max,
+                    layer_type=pb.layer_type,
+                )
+            )
+
+def build_region_sdl_file_oem(out_path: pathlib.Path, 
+                               db_id: int, 
+                               sdl_name: str, 
+                               parcel_builders: List[ParcelBuilder],
+                               topology_entries: List[TopologyEntry]):
+    """
+    Builds a regional .SDL file in OEM mode (current version): 
+    Parcels start immediately at the file beginning (Offset 0).
+    """
+    unit_shift = 12
+    unit_size = 1 << unit_shift
+    offset_bytes = 0
+    
+    with open(out_path, "wb") as f:
+        for pb in parcel_builders:
+            offset_units = offset_bytes >> unit_shift
+            
+            parcel_bytes = pb.make(offset_units)
+            
+            f.write(parcel_bytes)
+            pad = (-len(parcel_bytes)) & (unit_size - 1)
+            if pad:
+                f.write(b"\x00" * pad)
+            offset_bytes += len(parcel_bytes) + pad
+            
+            topology_entries.append(
+                TopologyEntry(
+                    db_id=db_id,
+                    sdl_name=sdl_name,
+                    parcel_id=pb.pid,
+                    offset_units=offset_units,
+                    rect_min_lat_ntu=pb.rect[0],
+                    rect_max_lat_ntu=pb.rect[1],
+                    rect_min_lon_ntu=pb.rect[2],
+                    rect_max_lon_ntu=pb.rect[3],
+                    scale_min=pb.scale_min,
+                    scale_max=pb.scale_max,
+                    layer_type=pb.layer_type,
+                )
+            )
+
+
+def build_region_sdl_file(mode: str, *args, **kwargs):
+    """Router function based on format mode."""
+    if mode.upper() == "SDAL":
+        return build_region_sdl_file_sdal(*args, **kwargs)
+    else: # OEM is default
+        return build_region_sdl_file_oem(*args, **kwargs)
+        
+# ────────────────────────────────────────────────────────────────
+# Helpers
+# ────────────────────────────────────────────────────────────────
+
+def write_init_sdl(dst_path: pathlib.Path, sdl_files: list[pathlib.Path], regions: list[str], supp_lang: str | None):
+    """
+    Generate INIT.SDL compliant with SDAL 1.7 Global Media File layout.
+    """
+    unit_shift = 12
+    unit_size = 1 << unit_shift
+    offset_bytes = 0
+    
+    if not supp_lang:
+        supp_langs = ["UKE"]
+    else:
+        supp_langs = [s.strip().upper() for s in supp_lang.split(',')]
+
+    
+    # 1. PID 100 Parcel (Locale/Translation Table)
+    payload_locale = encode_locale_table(countries, supp_langs)
+    
+    # 2. PID 101 Parcel (Symbol Table)
+    payload_symbol = encode_symbol_table(HUFFMAN_TABLE)
+    
+    # 3. CompressInfo_t (Встроенный в GlbMediaHeader Index)
+    payload_compress = encode_compress_info()
+    
+    # --- Предварительная сборка для получения смещений ---
+    # Parcel Header size is 20 bytes. Payload size is 512 bytes. Total 532 bytes.
+    # The first parcel (PID 19) is at offset 0 (0 units).
+    
+    # Parcel 19 size is 20 (header) + 512 (payload) = 532 bytes. Padded to unit_size (4096)
+    parcel_header_size = 532
+    pad1 = (-parcel_header_size) & (unit_size - 1)
+    
+    # Rough starting byte offset for PID 100 (Locale)
+    offset_locale_bytes_rough = parcel_header_size + pad1
+    offset_locale_units = offset_locale_bytes_rough // unit_size
+    
+    locale_parcel_size_rough = len(encode_bytes(LOCALE_PARCEL_ID, payload_locale, compress_type=NO_COMPRESSION, offset_units=offset_locale_units))
+    
+    # Rough starting byte offset for PID 101 (Symbol)
+    offset_symbol_bytes_rough = offset_locale_bytes_rough + locale_parcel_size_rough
+    # CompressInfo is conceptually located after PID 100/101, but the pointer 
+    # refers to the payload (which is static payload_compress).
+    
+    # We rely on the initial parcel offset of 0 (0 units) for PID 19.
+    offset_compress_units = offset_locale_units + (locale_parcel_size_rough // unit_size)
+
+    # --- 1. PID 19 (GlbMediaHeader) ---
+    # Pointers inside GlbMediaHeader_t refer to offsets in units relative to the start of the file.
+    payload_header = encode_glb_media_header(
+        sdl_files, regions, supp_langs, 
+        # Locales starts at offset_locale_units (Parcel 100)
+        offset_locale=offset_locale_units, 
+        # CompressInfo starts after PID 100/101 (This is the next parcel offset)
+        offset_compress=offset_compress_units
+    )
+    
+    parcel_header = encode_bytes(
+        GLB_MEDIA_HEADER_PID, payload_header, offset_units=0, region=0, 
+        parcel_type=0, parcel_desc=0, compress_type=NO_COMPRESSION, size_index=0
+    )
+    
+    
+    with open(dst_path, "wb") as f:
+        # 1. PID 19 (GlbMediaHeader) - Offset 0
+        f.write(parcel_header)
+        pad = (-len(parcel_header)) & (unit_size - 1)
+        if pad: f.write(b"\x00" * pad)
+        offset_bytes += len(parcel_header) + pad
+        
+        # 2. PID 100 (Locale Table)
+        parcel_locale = encode_bytes(
+            LOCALE_PARCEL_ID, payload_locale, offset_units=(offset_bytes >> unit_shift), region=0, 
+            parcel_type=0, parcel_desc=0, compress_type=NO_COMPRESSION, size_index=0
+        )
+        f.write(parcel_locale)
+        pad = (-len(parcel_locale)) & (unit_size - 1)
+        if pad: f.write(b"\x00" * pad)
+        offset_bytes += len(parcel_locale) + pad
+        
+        # 3. PID 101 (Symbol Table)
+        parcel_symbol = encode_bytes(
+            SYMBOL_PARCEL_ID, payload_symbol, offset_units=(offset_bytes >> unit_shift), region=0, 
+            parcel_type=0, parcel_desc=0, compress_type=NO_COMPRESSION, size_index=0
+        )
+        f.write(parcel_symbol)
+        pad = (-len(parcel_symbol)) & (unit_size - 1)
+        if pad: f.write(b"\x00" * pad)
 
 
 def marker_for_file(name: str) -> bytes:
@@ -208,7 +486,7 @@ def build_region_translation_table(region_slugs, supp_langs, countries_dict):
 
 
 def write_region_sdl(path, region_slugs, supp_lang, countries_dict):
-    """Write REGION.SDL in full OEM style."""
+    """Write REGION.SDL in full OEM style. (Kept OEM as per request)"""
     label = extract_continent(region_slugs)
     if not supp_lang:
         supp_langs = ["UKE"]
@@ -241,7 +519,7 @@ def write_region_sdl(path, region_slugs, supp_lang, countries_dict):
 
 
 def write_regions_sdl(path, region_slugs, supp_lang, countries_dict):
-    """Write REGIONS.SDL: simplified table of regions."""
+    """Write REGIONS.SDL: simplified table of regions. (Kept OEM as per request)"""
     if not supp_lang:
         supp_langs = ["UKE"]
     else:
@@ -266,7 +544,7 @@ def write_regions_sdl(path, region_slugs, supp_lang, countries_dict):
 
 
 def write_mtoc_sdl(path, files):
-    """Write MTOC.SDL with OEM-like records."""
+    """Write MTOC.SDL with OEM-like records. (Kept OEM as per request)"""
     buf = bytearray(b"\x00" * 64)
     next_id = 1
 
@@ -297,7 +575,7 @@ def write_cartotop_sdl(path: pathlib.Path, entries: List[TopologyEntry]):
         max_lon = max(e.rect_max_lon_ntu for e in entries)
 
         buf = bytearray()
-        buf += struct.pack(">iiii", min_lon, min_lat, max_lon, max_lon)
+        buf += struct.pack(">iiii", min_lon, min_lat, max_lon, max_lat) 
         buf += struct.pack(">H", len(entries))
         
         for e in entries:
@@ -331,6 +609,32 @@ def write_cartotop_sdl(path: pathlib.Path, entries: List[TopologyEntry]):
         if pad:
             f.write(b"\x00" * pad)
 
+
+def _encode_kdtree_idx_header(kd_data_len: int, min_lat: int, max_lat: int, min_lon: int, max_lon: int) -> bytes:
+    """
+    Encodes a minimal, structurally correct IDxPclHdr_t (32 bytes).
+    Structure: usIndexID(H), usIndexType(H), ulIndexOffset(I), ulIndexLength(I), min_lat(I), min_lon(I), reserved[4] (H*4)
+    """
+    # Структура: H H I I I I 4H
+    _IDXPCL_STRUCT = struct.Struct(">H H I I I I H H H H") 
+    
+    ul_index_offset = 0 
+    ul_index_length = kd_data_len
+    
+    us_index_id = 1 
+    us_index_type = 1 
+
+    args = (
+        us_index_id,      
+        us_index_type,    
+        ul_index_offset,  
+        ul_index_length,  
+        min_lat,          
+        min_lon,          
+        0, 0, 0, 0        
+    )
+    
+    return _IDXPCL_STRUCT.pack(*args)
 
 def init_logging(verbose: bool, work_dir: pathlib.Path):
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -369,77 +673,6 @@ def copy_oem_sdl_files(work_dir: pathlib.Path) -> list[pathlib.Path]:
     return result
 
 
-def write_init_sdl(dst_path: pathlib.Path, sdl_files: list[pathlib.Path], regions: list[str], supp_lang: str | None):
-    """
-    Generate INIT.SDL as a multi-parcel container:
-    1. PID 0: File/Region list (original content)
-    2. PID 100: Locale Table
-    3. PID 101: Symbol Table (Huffman)
-    """
-    unit_shift = 12
-    unit_size = 1 << unit_shift
-    offset_bytes = 0
-    
-    if not supp_lang:
-        supp_langs = ["UKE"]
-    else:
-        supp_langs = [s.strip().upper() for s in supp_lang.split(',')]
-
-
-    # --- 1. PID 0 Parcel (Original Content: File/Region List) ---
-    disc_label_str = extract_continent(regions)
-    payload_pid0 = bytearray()
-    payload_pid0 += disc_label_str.encode("ascii", "replace")[:16].ljust(16, b"\x00")
-
-    payload_pid0 += struct.pack(">H", len(regions))
-    for slug in regions:
-        rname = extract_country(slug)
-        payload_pid0 += rname.encode("ascii", "replace")[:16].ljust(16, b"\x00")
-
-    files_sorted = sorted(sdl_files, key=lambda p: p.name.upper())
-    payload_pid0 += struct.pack(">H", len(files_sorted))
-    for p in files_sorted:
-        fname = p.name.upper()
-        payload_pid0 += fname.encode("ascii", "replace")[:16].ljust(16, b"\x00")
-        
-    parcel_pid0 = encode_bytes(
-        0, bytes(payload_pid0), offset_units=0, region=0, parcel_type=0, parcel_desc=0, compress_type=NO_COMPRESSION, size_index=0
-    )
-    
-    # --- 2. PID 100 Parcel (Locale/Translation Table) ---
-    payload_locale = encode_locale_table(countries, supp_langs)
-    
-    # --- 3. PID 101 Parcel (Symbol/Huffman Table) ---
-    payload_symbol = encode_symbol_table(HUFFMAN_TABLE)
-    
-    
-    # --- Write Consolidated INIT.SDL ---
-    
-    with open(dst_path, "wb") as f:
-        # 1. PID 0 (Offset 0)
-        f.write(parcel_pid0)
-        pad = (-len(parcel_pid0)) & (unit_size - 1)
-        if pad: f.write(b"\x00" * pad)
-        offset_bytes += len(parcel_pid0) + pad
-        
-        # 2. PID 100 (Locale)
-        parcel_locale = encode_bytes(
-            LOCALE_PARCEL_ID, payload_locale, offset_units=(offset_bytes >> unit_shift), region=0, parcel_type=0, parcel_desc=0, compress_type=NO_COMPRESSION, size_index=0
-        )
-        f.write(parcel_locale)
-        pad = (-len(parcel_locale)) & (unit_size - 1)
-        if pad: f.write(b"\x00" * pad)
-        offset_bytes += len(parcel_locale) + pad
-        
-        # 3. PID 101 (Symbol)
-        parcel_symbol = encode_bytes(
-            SYMBOL_PARCEL_ID, payload_symbol, offset_units=(offset_bytes >> unit_shift), region=0, parcel_type=0, parcel_desc=0, compress_type=NO_COMPRESSION, size_index=0
-        )
-        f.write(parcel_symbol)
-        pad = (-len(parcel_symbol)) & (unit_size - 1)
-        if pad: f.write(b"\x00" * pad)
-
-
 def _iter_coords(geom):
     """Yield (lon, lat) pairs from LineString or MultiLineString."""
     if isinstance(geom, LineString):
@@ -451,12 +684,83 @@ def _iter_coords(geom):
                 yield (x, y)
 
 
-def build_region_sdl_file(out_path: pathlib.Path, 
+def build_region_sdl_file(mode: str, out_path: pathlib.Path, 
                           db_id: int, 
                           sdl_name: str, 
                           parcel_builders: List[ParcelBuilder],
                           topology_entries: List[TopologyEntry]):
-    """Build a regional .SDL file and update the global topology list."""
+    """Router function based on format mode."""
+    if mode.upper() == "SDAL":
+        return build_region_sdl_file_sdal(out_path, db_id, sdl_name, parcel_builders, topology_entries)
+    else: # OEM is default
+        return build_region_sdl_file_oem(out_path, db_id, sdl_name, parcel_builders, topology_entries)
+
+
+def build_region_sdl_file_sdal(out_path: pathlib.Path, 
+                               db_id: int, 
+                               sdl_name: str, 
+                               parcel_builders: List[ParcelBuilder],
+                               topology_entries: List[TopologyEntry]):
+    """
+    Builds a regional .SDL file in SDAL mode: RgnHdr_t (512B + padding) + Parcels.
+    """
+    unit_shift = 12
+    unit_size = 1 << unit_shift
+    
+    # 1. Write RgnHdr_t (512 bytes)
+    region_header = _encode_region_header(db_id)
+    
+    region_header_size = len(region_header)
+    # RgnHdr_t is written and padded to the next unit boundary (4096 bytes)
+    pad_to_unit = (-region_header_size) & (unit_size - 1)
+    
+    # Offset of the first actual parcel payload (in bytes)
+    offset_bytes = region_header_size + pad_to_unit
+    
+    with open(out_path, "wb") as f:
+        f.write(region_header)
+        if pad_to_unit:
+            f.write(b'\x00' * pad_to_unit)
+
+        # 2. Write Data Parcels (PclHdr_t + Payload)
+        for pb in parcel_builders:
+            # Offset units calculation respects the header/padding at the start of the file
+            offset_units = offset_bytes >> unit_shift
+            
+            parcel_bytes = pb.make(offset_units) 
+            
+            f.write(parcel_bytes)
+            pad = (-len(parcel_bytes)) & (unit_size - 1)
+            if pad:
+                f.write(b"\x00" * pad)
+            offset_bytes += len(parcel_bytes) + pad
+            
+            topology_entries.append(
+                # Topology Entry's offset is based on the whole file, including RgnHdr_t.
+                TopologyEntry(
+                    db_id=db_id,
+                    sdl_name=sdl_name,
+                    parcel_id=pb.pid,
+                    offset_units=offset_units,
+                    rect_min_lat_ntu=pb.rect[0],
+                    rect_max_lat_ntu=pb.rect[1],
+                    rect_min_lon_ntu=pb.rect[2],
+                    rect_max_lon_ntu=pb.rect[3],
+                    scale_min=pb.scale_min,
+                    scale_max=pb.scale_max,
+                    layer_type=pb.layer_type,
+                )
+            )
+
+def build_region_sdl_file_oem(out_path: pathlib.Path, 
+                               db_id: int, 
+                               sdl_name: str, 
+                               parcel_builders: List[ParcelBuilder],
+                               topology_entries: List[TopologyEntry]):
+    """
+    Builds a regional .SDL file in OEM mode (current version): 
+    Parcels start immediately at the file beginning (Offset 0).
+    """
     unit_shift = 12
     unit_size = 1 << unit_shift
     offset_bytes = 0
@@ -575,7 +879,7 @@ def build_routing_graph_from_roads_df(roads_df) -> tuple[list[NodeRecord], list[
 
 def build(
     regions: list[str], out_iso: pathlib.Path, work: pathlib.Path,
-    region_label=None, supp_lang=None
+    region_label=None, supp_lang=None, format_mode: str = "OEM"
 ):
     log = logging.getLogger(__name__)
 
@@ -648,20 +952,39 @@ def build(
     # 2.5) Build Global KD-Tree from POI coordinates
     log.info("Building Global KD-Tree from %d POI geometries...", len(poi_coords))
     if not poi_coords:
-        kd_blob = b""
+        kd_payload = b""
+        min_lat_ntu, max_lat_ntu, min_lon_ntu, max_lon_ntu = 0, 0, 0, 0
     else:
+        # Build KD-Tree (using simplified serialization for now)
         kd_tree_obj = build_kdtree(poi_coords)
-        kd_blob = serialize_kdtree(kd_tree_obj) 
-        log.info("Serialized KD-Tree payload size: %.2f MB", len(kd_blob) / 1e6)
+        kd_data = serialize_kdtree(kd_tree_obj) 
+        
+        # Calculate bounding box for IDxPclHdr_t
+        all_lons = [c[0] for c in poi_coords]
+        all_lats = [c[1] for c in poi_coords]
+        min_lat, min_lon = min(all_lats), min(all_lons)
+        max_lat, max_lon = max(all_lats), max(all_lons)
+        min_lat_ntu, min_lon_ntu = deg_to_ntu(min_lat, min_lon)
+        max_lat_ntu, max_lon_ntu = deg_to_ntu(max_lat, max_lon)
+        
+        # Construct IDxPclHdr_t (32 bytes) + KD Data
+        kd_header = _encode_kdtree_idx_header(
+            len(kd_data),
+            min_lat_ntu, max_lat_ntu, min_lon_ntu, max_lon_ntu # Bounding box
+        )
+        kd_payload = kd_header + kd_data
+        
+        log.info("Serialized KD-Tree payload size: %.2f MB", len(kd_payload) / 1e6)
         del kd_tree_obj
     
 
-    # 3) Encode POI names (one big file)
+    # 3) Encode POI names (NO_COMPRESSION)
     global_files: list[pathlib.Path] = []
     global_files.extend(copy_oem_sdl_files(work))
 
     poi_name_file = work / "POINAMES.SDL"
-    poi_name_file.write_bytes(encode_strings(POI_NAME_PARCEL_ID, all_poi_names, compress_type=SZIP_COMPRESSION))
+    # ФУНКЦИОНАЛЬНОЕ ИСПРАВЛЕНИЕ: Используем NO_COMPRESSION
+    poi_name_file.write_bytes(encode_strings(POI_NAME_PARCEL_ID, all_poi_names, compress_type=NO_COMPRESSION))
     global_files.append(poi_name_file)
 
     # 4) Encode POI geometry & index
@@ -685,8 +1008,9 @@ def build(
     global_files.append(poi_geom_file)
 
     # 5) KDTREE & placeholders
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем kd_payload, включающий IDxPclHdr_t
     for name, pid, data in [
-        ("KDTREE.SDL", KDTREE_PARCEL_ID, kd_blob), 
+        ("KDTREE.SDL", GLB_KD_TREE_PID, kd_payload), 
     ]:
         path = work / name
         path.write_bytes(encode_bytes(pid, data, offset_units=0, region=0, parcel_type=0, parcel_desc=0, compress_type=NO_COMPRESSION, size_index=0))
@@ -742,7 +1066,6 @@ def build(
                     
                     for seg_geom in tqdm(
                         clipped,
-                        # УЛУЧШЕННОЕ ЛОГИРОВАНИЕ
                         desc=f"Rasterizing DENSITY: {region} | Zoom {Z} Tile ({tx},{ty})",
                         unit="geom",
                     ):
@@ -819,7 +1142,8 @@ def build(
         # XXX0.SDL — "fast" names (Textual data)
         fast_file = work / f"{stem}0.SDL"
         names = roads_df["name"].fillna("").tolist()
-        fast_file.write_bytes(encode_strings(NAV_PARCEL_ID, names, compress_type=SZIP_COMPRESSION))
+        # ФУНКЦИОНАЛЬНОЕ ИСПРАВЛЕНИЕ: Используем NO_COMPRESSION
+        fast_file.write_bytes(encode_strings(NAV_PARCEL_ID, names, compress_type=NO_COMPRESSION))
 
         # Cartography records + B-tree offsets
         records: list[tuple[int, list[tuple[float, float]]]] = []
@@ -881,19 +1205,20 @@ def build(
 
         def make_routing_parcel(offset_units: int, _nodes=nodes, _segments=segments, _scale_shift=scale_shift, _rect=region_rect_ntu):
             return encode_routing_parcel(
-                pid=130, nodes=_nodes, segments=_segments, region=1,
-                parcel_type=0, parcel_desc=0x0200, offset_units=offset_units,
+                pid=ROUTING_PARCEL_ID, nodes=_nodes, segments=_segments, region=1,
+                parcel_type=0, parcel_desc=0x02, offset_units=offset_units,
                 rect_ntu=_rect, scale_shift=_scale_shift, size_index=0,
                 compress_type=NO_COMPRESSION
             )
 
         parcel_builders.append(ParcelBuilder(
-            pid=130, layer_type=1, make=make_routing_parcel, rect=region_rect_ntu,
+            pid=ROUTING_PARCEL_ID, layer_type=1, make=make_routing_parcel, rect=region_rect_ntu,
             scale_min=0, scale_max=0xFFFF, compress=NO_COMPRESSION
         ))
 
+        # Используем роутер для выбора режима построения файла
         build_region_sdl_file(
-            map_file, db_id=db_id, sdl_name=map_file.name,
+            format_mode, map_file, db_id=db_id, sdl_name=map_file.name,
             parcel_builders=parcel_builders, topology_entries=topology_entries
         )
 
@@ -926,6 +1251,8 @@ def build(
         iso_tmp.unlink()
 
     all_sdl_for_iso = all_for_mtoc + [mtoc_sdl]
+    
+    from .iso import build_iso 
     build_iso(
         sdl_files=all_sdl_for_iso,
         out_iso=iso_tmp,
@@ -949,6 +1276,12 @@ def cli():
         default=None,
         help="Supported language codes as CSV (e.g., 'DAN,DUT,ENG'). Default: UKE",
     )
+    parser.add_argument(
+        "--format-mode",
+        default="OEM",
+        choices=["OEM", "SDAL"],
+        help="Map file structuring mode. OEM uses custom header/index; SDAL uses RgnHdr_t.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = parser.parse_args()
     init_logging(args.verbose, pathlib.Path(args.work))
@@ -958,6 +1291,7 @@ def cli():
         pathlib.Path(args.work),
         region_label=args.region_label,
         supp_lang=args.supp_lang,
+        format_mode=args.format_mode,
     )
 
 

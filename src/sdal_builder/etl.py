@@ -52,7 +52,7 @@ def load_all_pois(
     tags = set(poi_tags) if poi_tags else DEFAULT_POI_TAGS
     tag_filter = {k: True for k in tags}
 
-    logger.info("Loading POIs with Pyrosm.get_pois (Vectorized Filter)...")
+    logger.info("Loading POIs with Pyrosm.get_pois (Vectorized Filter)... Please be patient large files may take time.")
     poi_gdf = OSM(str(pbf_path)).get_pois(custom_filter=tag_filter)
 
     logger.info("Loaded %d POIs after filtering", len(poi_gdf))
@@ -87,7 +87,7 @@ def load_road_network(pbf_path: Union[str, Path]) -> gpd.GeoDataFrame:
 
 
 # ────────────────────────────────────────────────────────────────
-# Geofabrik: download and region existence (with progress)
+# Geofabrik: download and region existence (с прогрессом)
 # ────────────────────────────────────────────────────────────────
 
 def download_region_if_needed(region: str, work_dir: Path) -> Path:

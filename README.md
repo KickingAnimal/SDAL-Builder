@@ -46,6 +46,34 @@ It is designed for researchers, navigation developers, and simulation projects n
 
 ---
 
+
+## Recent Enhancements
+
+1. **Streamlined Build Process (“Baking” Constants)**  
+   The build now no longer depends on a physical `INIT.SDL` being present in the `oem_sdl` folder for every run.  
+   - A new helper tool, `create_constants.py`, is executed once during the initial setup. It parses an original OEM `INIT.SDL`, extracts static binary headers and translation dictionaries, and “bakes” them into a Python module: `src/sdal_builder/init_constants.py`.  
+   - The main builder (`main.py`) imports these constants directly, making the build process self-contained, deterministic, and less error-prone.
+
+2. **OEM-Compliant File Structure**  
+   To better match the strict expectations of older SDAL head units, several output files have been refined:  
+   - **Split Density (Traffic) Data:** Density layers now follow the OEM pattern and are written as two files per region:  
+     - `DENSxx0.SDL` — metadata, headers, and table structures.  
+     - `DENSxx1.SDL` — raw tile payloads.  
+   - **Corrected `KDTREE.SDL` Header:** The `KDTREE.SDL` file now starts with a properly populated `IDxPclHdr_t` header before the KD-tree payload. This allows the navigation system to correctly detect global and regional bounding boxes.
+
+3. **Deep Validation Tool (`validate_sdal_iso.py`)**  
+   The ISO validator has been completely rewritten and now performs structural integrity checks instead of just verifying file presence:  
+   - **Parcel Chain Check:** Walks SDAL map files byte-by-byte to verify parcel chains (`Header → Length → Padding → Next Header`).  
+   - **OEM Signatures:** Looks for specific ASCII signatures and binary markers in `INIT.SDL` that OEM discs are known to contain.  
+   - **Topology Linkage:** Verifies that `DB_ID` references in the global index (`CARTOTOP.SDL`) match the IDs embedded inside regional map files.  
+   - **Index Tree Structure:** Performs basic shape checks on B-trees and K-trees to reduce the risk of runtime search failures in the head unit.
+
+4. **Encoding & Compatibility**  
+   To maximize compatibility with older firmware and simplify debugging:  
+   - All currently implemented text/data parcels (e.g., `POINAMES`, `NAV`) are written using the `NO_COMPRESSION` mode.  
+   - Huffman and SZIP compression paths are intentionally disabled or bypassed. Headers remain SDAL-compliant, so compression can be re-enabled in a future version without breaking the format.
+
+
 ## Supported Vehicle Platforms
 
 The SDAL format was historically used in the following car navigation systems:

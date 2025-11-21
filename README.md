@@ -197,7 +197,7 @@ The helper script `build.sh` provides a simple interface and accepts the format 
 ./build.sh <region> [region2 ...] [output.iso] [--format-mode {OEM|SDAL}]
 ```
 
-**Example (OEM Mode – default):**  
+**Example (OEM Mode – default eg.:SAAB/Mazda compliant):**  
 Uses custom OEM headers for control files (`REGION.SDL`, `MTOC.SDL`) and places map parcels directly at the start of map files (`XXX1.SDL`).
 
 ```bash

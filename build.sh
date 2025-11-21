@@ -22,6 +22,7 @@ if [[ "${1-}" == "--clean" ]]; then
   # Remove Python bytecode caches
   rm -rf src/sdal_builder/__pycache__
   rm -rf src/sdal_builder/__init__.py
+  rm -rf src/sdal_builder.egg-info
 
   # Remove virtual environment
   rm -rf .venv

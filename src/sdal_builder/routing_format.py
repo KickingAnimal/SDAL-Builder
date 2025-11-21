@@ -6,8 +6,8 @@ import io
 from dataclasses import dataclass, field
 from typing import List, Tuple, Any, Optional
 
-# ИМПОРТ ТОЛЬКО НЕОБХОДИМЫХ КОНСТАНТ 
-from .constants import NO_COMPRESSION, ROUTING_PARCEL_ID
+# ИСПРАВЛЕНИЕ: Убрали ROUTING_PARCEL_ID из импорта, так как он теперь динамический
+from .constants import NO_COMPRESSION
 
 # ────────────────────────────────────────────────────────────────
 # SDAL 1.7 Constants & Helpers
@@ -216,9 +216,6 @@ def encode_segments_block(segments: List[SegmentRecord]) -> bytes:
 # Internal Routing Header (RoutingParcelHeader0_t)
 # ────────────────────────────────────────────────────────────────
 
-# ИСПРАВЛЕНО:
-# Структура теперь явно включает 16 полей, включая разбитые reserved и padding.
-# Размер строго 32 байта: 26 байт данных + 6 байт паддинга.
 _ROUTING_HDR0_STRUCT = struct.Struct(
     ">H I B B I H H H B B B B H H H I"
 )
@@ -255,10 +252,6 @@ def _encode_block_offset_array(node_data_offset: int, seg_data_offset: int) -> b
     Encodes the Block Offset Array (4 x Ulong, 16 bytes).
     Offsets are relative to the start of this array.
     """
-    # Offset 0: Node Data Block Offset (относительно начала BOA)
-    # Offset 4: Segment Data Block Offset (относительно начала BOA)
-    # Offset 8: Condition Data Block Offset (Placeholder)
-    # Offset 12: Reserved (Placeholder)
     return struct.pack(">IIII",
                        node_data_offset, 
                        seg_data_offset,  
@@ -270,17 +263,14 @@ def _encode_block_offset_array(node_data_offset: int, seg_data_offset: int) -> b
 # Main Parcel Encoder (SptlPclHdr_t)
 # ────────────────────────────────────────────────────────────────
 
-# ПОЛНЫЙ SPTL_PCL_HDR_T (128 байт)
 _SPTL_HDR_STRUCT = struct.Struct(
     # 1. DBRect_t boundingRect, tileRect, ancestorRect (3 * 16 = 48 bytes)
     ">iiiiiiiiiiii" 
     # 2. XrfPclHdr_t (20 bytes)
-    # ulPclIDTblOffset(I), usPclIDTblLen(H), ucPclIDTblEntryLen(B), ucReserved(B)
     "IHBB"
     # 3. KD-Tree Offsets/Sizes (32 bytes, ushort * 16)
     "HHHHHHHHHHHHHHHH" 
     # 4. Remaining: Scale/Layer/NodeCount/SegCount (28 bytes)
-    # ucScale(B), ucLayer(B), usReserved(H), ulNodeCount(I), ulSegCount(I)
     "BBHII"
     # 5. Padding (16 bytes)
     "4I" 
@@ -370,8 +360,9 @@ def encode_routing_parcel(pid: int,
     )
     
     # 5. Wrap in standard PclHdr_t
+    # ИСПРАВЛЕНИЕ: Используем pid, переданный как аргумент, а не удаленную константу
     return encode_bytes(
-        pid=ROUTING_PARCEL_ID, 
+        pid=pid, 
         payload=raw_payload,
         region=region,
         parcel_type=parcel_type,

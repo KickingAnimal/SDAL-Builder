@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./build.sh [--clean] <region1> [region2 ...] [<out_iso>]
+# Usage: ./build.sh [--clean] <region1> [region2 ...] [<out_iso>] [optional_flags...]
 # Examples:
 #   ./build.sh europe/cyprus
-#   ./build.sh europe/cyprus europe/spain
 #   ./build.sh europe/cyprus europe/spain mymaps.iso
-#   ./build.sh --clean
-#
-# NEW: Pass optional flags like --format-mode SDAL, --supp-lang DAN,ENG
 #   ./build.sh europe/cyprus --format-mode SDAL --supp-lang ENG
+#   ./build.sh --clean
 
 # Change to the script’s directory (project root)
 cd "$(dirname "$0")"
@@ -37,42 +34,70 @@ if [[ "${1-}" == "--clean" ]]; then
 fi
 
 # ----------------------------------------------------------------
-# Аргументный парсер для разделения флагов и позиционных аргументов
+# Argument parser to reliably separate positional regions and flags + values.
+# The ISO output name is always the last positional argument, if present.
 # ----------------------------------------------------------------
 
-POSITIONAL_ARGS=() # regions + optional out_iso
-FLAG_ARGS=()       # --format-mode, --supp-lang, -v, etc.
+# Arguments:
+# REGIONS: The list of region slugs (positional arguments for the Python script)
+# OPTIONS: The list of flags and their values (e.g., --format-mode OEM, --supp-lang ENG)
+# OUT: The final ISO filename
+REGIONS=()
+OPTIONS=()
+ISO_ARG=""
 
-for arg in "$@"; do
-    # Проверяем, является ли аргумент флагом (начинается с - или --)
+# 1. Identify and separate the optional final ISO filename
+if [[ "${@: -1}" == *.iso ]]; then
+  ISO_ARG="${@: -1}"
+  # Process all arguments except the last one (the ISO file)
+  args_to_process=("${@:1:$(($#-1))}")
+else
+  # Process all arguments
+  args_to_process=("$@")
+fi
+
+# 2. Iterate through the remaining arguments to separate regions from options.
+i=0
+while [[ $i -lt ${#args_to_process[@]} ]]; do
+    arg="${args_to_process[i]}"
+    
     if [[ "$arg" == --* ]] || [[ "$arg" == -* ]]; then
-        FLAG_ARGS+=("$arg")
+        # This is a flag. Add the flag itself.
+        OPTIONS+=("$arg")
+        i=$((i+1))
+        
+        # Check if the next argument is the value for this flag (i.e., not another flag)
+        if [[ $i -lt ${#args_to_process[@]} ]]; then
+            next_arg="${args_to_process[i]}"
+            # Value check: If the next argument does NOT start with a hyphen, it's the value.
+            if ! [[ "$next_arg" == --* ]] && ! [[ "$next_arg" == -* ]]; then
+                OPTIONS+=("$next_arg")
+                i=$((i+1))
+            fi
+        fi
     else
-        POSITIONAL_ARGS+=("$arg")
+        # This is a positional argument (a region slug)
+        REGIONS+=("$arg")
+        i=$((i+1))
     fi
 done
 
-if [[ ${#POSITIONAL_ARGS[@]} -lt 1 ]]; then
-  echo "Usage: $0 [--clean] <region1> [region2 ...] [<out_iso>]"
+if [[ ${#REGIONS[@]} -lt 1 ]]; then
+  echo "Usage: $0 [--clean] <region1> [region2 ...] [<out_iso>] [optional_flags...]"
   echo "Note: Use --format-mode {OEM,SDAL} to switch file structure. Default is OEM."
   exit 1
 fi
 
-# Определяем, является ли последний позиционный аргумент именем ISO файла.
-LAST_POS_ARG="${POSITIONAL_ARGS[@]: -1}"
-
-if [[ "$LAST_POS_ARG" == *.iso ]]; then
-  OUT="$LAST_POS_ARG"
-  # Регионы - все позиционные аргументы, кроме последнего
-  REGIONS=("${POSITIONAL_ARGS[@]:0:$((${#POSITIONAL_ARGS[@]}-1))}")
+# 3. Determine the output ISO filename
+if [[ -n "$ISO_ARG" ]]; then
+  OUT="$ISO_ARG"
 else
-  REGIONS=("${POSITIONAL_ARGS[@]}")
-  # Выводим имя OUT из первого региона
+  # Derive OUT from the first region slug
   SLUG="${REGIONS[0]##*/}"
   OUT="${SLUG}.iso"
 fi
 
-# Определяем рабочую директорию
+# Define the working directory
 WORK_DIR="${ROOT}/build"
 
 
@@ -83,13 +108,14 @@ source .venv/bin/activate
 echo "Venv activated. Python: $(which python)"
 
 # 2) Install/update dependencies
+# Note: Assuming 'pip install -e .' is sufficient and requirements.txt is not strictly needed.
 .venv/bin/python3 -m pip install -e .
 
-# 3) Execute the builder (передавая все флаги в конце)
+# 3) Execute the builder (passing all flags and arguments safely)
 echo "Building regions: ${REGIONS[*]} into $OUT (work_dir: $WORK_DIR)"
 
-# Запускаем через wrapper sdal_build.py, который настраивает PYTHONPATH
-# Используем безопасный синтаксис ${ARR[@]+"${ARR[@]}"} для macOS/Bash 3.2
-python3 "$ROOT/sdal_build.py" "${REGIONS[@]}" --out "$OUT" --work "$WORK_DIR" ${FLAG_ARGS[@]+"${FLAG_ARGS[@]}"}
+# Execute the Python builder, passing positional regions first, then all required and optional flags.
+# We use the safe syntax ${OPTIONS[@]+"${OPTIONS[@]}"} for older bash compatibility
+python3 "$ROOT/sdal_build.py" "${REGIONS[@]}" --out "$OUT" --work "$WORK_DIR" ${OPTIONS[@]+"${OPTIONS[@]}"}
 
 echo "Success! ISO image is available at $OUT"
